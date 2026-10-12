@@ -1,0 +1,39 @@
+{
+  "version": 1,
+  "name": "MyFilm TV Demo",
+  "sources": [
+    {
+      "id": "demo",
+      "name": "开放测试视频",
+      "type": "catalog",
+      "enabled": true,
+      "movies": [
+        {
+          "id": "bbb",
+          "title": "Big Buck Bunny",
+          "year": "2008",
+          "category": "动画",
+          "poster": "https://storage.googleapis.com/gtv-videos-bucket/sample/images/BigBuckBunny.jpg",
+          "description": "播放器测试视频（来自 Google 的公开测试媒体）。",
+          "episodes": [{"name": "播放", "url": "https://storage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4"}]
+        },
+        {
+          "id": "elephants-dream",
+          "title": "Elephant Dream",
+          "year": "2006",
+          "category": "动画",
+          "poster": "https://storage.googleapis.com/gtv-videos-bucket/sample/images/ElephantsDream.jpg",
+          "episodes": [{"name": "播放", "url": "https://storage.googleapis.com/gtv-videos-bucket/sample/ElephantsDream.mp4"}]
+        },
+        {
+          "id": "sintel",
+          "title": "Sintel",
+          "year": "2010",
+          "category": "动画",
+          "poster": "https://storage.googleapis.com/gtv-videos-bucket/sample/images/Sintel.jpg",
+          "episodes": [{"name": "播放", "url": "https://storage.googleapis.com/gtv-videos-bucket/sample/Sintel.mp4"}]
+        }
+      ]
+    }
+  ]
+}
