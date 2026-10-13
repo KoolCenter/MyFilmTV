@@ -69,7 +69,10 @@ object Network {
         val name = j.optString("vod_name").trim()
         if (name.isEmpty()) return null
         val movie = Movie(name, j.optString("vod_year"), j.optString("vod_pic"),
-            j.optString("vod_content").replace(Regex("<[^>]+>"), " "))
+            j.optString("vod_content").replace(Regex("<[^>]+>"), " ").replace("&nbsp;", " ").trim(),
+            j.optString("vod_class"), j.optString("vod_area"), j.optString("vod_actor"),
+            j.optString("vod_director"), j.optString("vod_score"), j.optString("vod_time"),
+            j.optLong("vod_hits"), j.optString("vod_remarks"))
         val names = j.optString("vod_play_from").split("\$\$\$")
         j.optString("vod_play_url").split("\$\$\$").forEachIndexed { i, section ->
             val episodes = section.split('#').mapNotNull { ep ->

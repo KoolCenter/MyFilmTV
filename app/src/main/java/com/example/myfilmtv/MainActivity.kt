@@ -37,6 +37,12 @@ class MainActivity : Activity() {
     private var rendering = false
     private var lastRenderedCount = 0
     private var categoryComplete = false
+    private var selectedGenre = "全部"
+    private var selectedYear = "全部"
+    private var selectedSort = "最近更新"
+    private val genreOptions = listOf("全部", "动作", "喜剧", "科幻", "剧情", "悬疑", "惊悚", "恐怖", "爱情", "动画", "犯罪", "纪录")
+    private val yearOptions = listOf("全部", "2026", "2025", "2024", "2023", "2022", "2021", "2020", "2010年代", "更早")
+    private val sortOptions = listOf("最近更新", "上映年份", "评分优先", "来源热度")
     private val tabs = listOf("home" to "首页", "movie" to "电影", "series" to "电视剧", "variety" to "综艺", "anime" to "动漫", "short" to "短剧")
 
     private fun dp(n: Int) = (n * resources.displayMetrics.density).toInt()
@@ -85,7 +91,7 @@ class MainActivity : Activity() {
     }
     private fun redrawHeader() { root.removeViewAt(0); drawHeader() }
     private fun openTab(key: String) {
-        currentTab=key; searchTerm=""; sourcePages.clear(); exhausted.clear(); displayed.clear()
+        currentTab=key; searchTerm=""; selectedGenre="全部"; selectedYear="全部"; selectedSort="最近更新"; sourcePages.clear(); exhausted.clear(); displayed.clear()
         redrawHeader(); loadTab()
     }
     private fun loadConfig() {
@@ -142,6 +148,7 @@ class MainActivity : Activity() {
         } else {
             val title=if(currentTab=="search") "搜索：$searchTerm" else tabs.firstOrNull{it.first==currentTab}?.second.orEmpty()
             content.addView(text("$title · 全部资源",22f,true).apply { setPadding(0,dp(12),0,dp(8)) })
+            if(currentTab!="search") addFilters()
             val grid=GridLayout(this).apply { columnCount=5; tag="moviegrid" }
             content.addView(grid)
             if(currentTab!="search") renderCatalog(store.movies(currentTab))
@@ -177,21 +184,74 @@ class MainActivity : Activity() {
         }
         if(content.childCount==0) content.addView(text("正在首次建立片库缓存，请稍候…",20f))
     }
+    private fun addFilters() {
+        val row=LinearLayout(this).apply { orientation=LinearLayout.HORIZONTAL; setPadding(0,dp(6),0,dp(10)); tag="filters" }
+        fun choice(label:String, options:List<String>, selected:()->String, change:(String)->Unit) {
+            val b=button("$label：${selected()}") {
+                AlertDialog.Builder(this).setTitle(label).setSingleChoiceItems(options.toTypedArray(), options.indexOf(selected())) { dialog, which ->
+                    change(options[which]); dialog.dismiss(); updateFilters(); refreshCatalog()
+                }.setNegativeButton("返回",null).show()
+            }
+            row.addView(b,LinearLayout.LayoutParams(0,dp(49),1f).apply { rightMargin=dp(12) })
+        }
+        choice("类型",genreOptions,{selectedGenre},{selectedGenre=it})
+        choice("年份",yearOptions,{selectedYear},{selectedYear=it})
+        choice("排序",sortOptions,{selectedSort},{selectedSort=it})
+        content.addView(row)
+    }
+    private fun updateFilters() {
+        val row=content.findViewWithTag<LinearLayout>("filters") ?: return
+        val index=content.indexOfChild(row)
+        content.removeView(row)
+        addFiltersAt(index)
+    }
+    private fun addFiltersAt(index:Int) {
+        // addFilters appends the view; move it back to its original position.
+        addFilters()
+        val row=content.findViewWithTag<View>("filters")
+        content.removeView(row)
+        content.addView(row,index)
+    }
+    private fun filtered(movies:List<Movie>):List<Movie> {
+        val list=Network.merge(listOf(movies)).filter { m ->
+            (selectedGenre=="全部" || m.genre.contains(selectedGenre,true)) &&
+            (selectedYear=="全部" || when(selectedYear) {
+                "2010年代" -> (m.year.toIntOrNull() ?: 0) in 2010..2019
+                "更早" -> (m.year.toIntOrNull() ?: 9999)<2010
+                else -> m.year==selectedYear
+            })
+        }
+        return when(selectedSort) {
+            "上映年份" -> list.sortedWith(compareByDescending<Movie> { it.year.toIntOrNull() ?: 0 }.thenBy { it.name })
+            "评分优先" -> list.sortedByDescending { it.score.toDoubleOrNull() ?: -1.0 }
+            "来源热度" -> list.sortedByDescending { it.hits }
+            else -> list.sortedWith(compareByDescending<Movie> { it.updateTime }.thenByDescending { it.year })
+        }
+    }
+    private fun refreshCatalog() {
+        if(currentTab=="home" || currentTab=="search") return
+        renderCatalog(store.movies(currentTab))
+    }
     private fun renderCatalog(movies:List<Movie>) {
         val grid=content.findViewWithTag<GridLayout>("moviegrid") ?: return
         if(rendering) return
         rendering=true
-        val merged=Network.merge(listOf(movies))
-        val existing=displayed.map { it.name.trim().lowercase()+"|"+it.year }.toHashSet()
-        val additional=merged.filter { existing.add(it.name.trim().lowercase()+"|"+it.year) }
-        displayed.addAll(additional)
-        additional.forEach { m ->
-            val i=grid.childCount
-            grid.addView(movieCard(m,dp(168)),GridLayout.LayoutParams(GridLayout.spec(i/5),GridLayout.spec(i%5)).apply {
-                width=dp(168);height=dp(246);setMargins(dp(5),dp(5),dp(8),dp(7))
-            })
+        val selected=filtered(movies)
+        // Rebuild only if the ordered visible result set changed. Focus returns to the same cell.
+        val focusBefore=grid.findFocus()
+        val oldFocus=if(focusBefore!=null) grid.indexOfChild(focusBefore).coerceAtLeast(0) else -1
+        val signatures=selected.map { it.name.trim().lowercase()+"|"+it.year }
+        val oldSignatures=displayed.map { it.name.trim().lowercase()+"|"+it.year }
+        if(signatures!=oldSignatures) {
+            grid.removeAllViews(); displayed.clear();displayed.addAll(selected)
+            selected.forEachIndexed { i,m ->
+                grid.addView(movieCard(m,dp(168)),GridLayout.LayoutParams(GridLayout.spec(i/5),GridLayout.spec(i%5)).apply {
+                    width=dp(168);height=dp(246);setMargins(dp(5),dp(5),dp(8),dp(7))
+                })
+            }
+            if(oldFocus>=0 && grid.childCount>0) grid.getChildAt(oldFocus.coerceAtMost(grid.childCount-1)).requestFocus()
         }
-        status.text="${tabs.firstOrNull{it.first==currentTab}?.second ?: "搜索"} · 已缓存 ${displayed.size} 部 · 滚动自动加载"
+        status.text="${tabs.firstOrNull{it.first==currentTab}?.second ?: "搜索"} · 当前筛选 ${displayed.size} 部（来自已缓存目录）· 后台仍在补充"
         rendering=false
     }
     private fun loadNext() {
@@ -233,10 +293,23 @@ class MainActivity : Activity() {
     private fun showMovie(m: Movie) {
         val episodes=m.lines.flatMap { l -> l.episodes.map { Triple(l,it.first,it.second) } }
         if(episodes.isEmpty()) { toast("没有可直接播放的线路"); return }
-        AlertDialog.Builder(this).setTitle(m.name)
-            .setItems(episodes.map { "${it.first.source} · ${it.first.label} · ${it.second}" }.toTypedArray()) { _,which ->
-                play(m,episodes[which].third,0L)
-            }.setNegativeButton("返回",null).show()
+        val summary=listOfNotNull(
+            listOf(m.year,m.area,m.genre).filter {it.isNotBlank()}.joinToString("  ·  ").takeIf {it.isNotBlank()},
+            m.score.takeIf {it.isNotBlank()}?.let {"评分：$it（资源站）"},
+            m.director.takeIf {it.isNotBlank()}?.let {"导演：$it"},
+            m.actors.takeIf {it.isNotBlank()}?.let {"主演：${it.take(100)}"},
+            m.remarks.takeIf {it.isNotBlank()}?.let {"状态：$it"},
+            m.description.takeIf {it.isNotBlank()}?.take(330)
+        ).joinToString("\n\n")
+        val lines=episodes.map { "${it.first.source} · ${it.first.label} · ${it.second}" }
+        val pane=LinearLayout(this).apply { orientation=LinearLayout.VERTICAL; setPadding(dp(20),dp(8),dp(20),dp(8)) }
+        if(summary.isNotBlank()) pane.addView(text(summary,15f).apply {setPadding(0,0,0,dp(12))})
+        pane.addView(text("选择播放线路 / 集数",18f,true))
+        val list=ListView(this).apply { adapter=ArrayAdapter(this@MainActivity,android.R.layout.simple_list_item_1,lines); isFocusable=true }
+        pane.addView(list,LinearLayout.LayoutParams(-1,dp(260)))
+        val dialog=AlertDialog.Builder(this).setTitle(m.name).setView(pane).setNegativeButton("返回",null).create()
+        list.setOnItemClickListener { _,_,which,_ -> dialog.dismiss(); play(m,episodes[which].third,0L) }
+        dialog.show();list.requestFocus()
     }
     private fun play(m:Movie,url:String,position:Long) {
         val intent=Intent(this,PlayerActivity::class.java).putExtra("url",url).putExtra("position",position)

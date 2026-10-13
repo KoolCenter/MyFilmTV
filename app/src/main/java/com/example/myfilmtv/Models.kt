@@ -4,7 +4,7 @@ import org.json.JSONObject
 
 data class Source(val id: String, val name: String, val api: String, val enabled: Boolean)
 data class PlayLine(val source: String, val label: String, val episodes: List<Pair<String, String>>)
-data class Movie(val name: String, val year: String, val image: String, val description: String, val lines: MutableList<PlayLine> = mutableListOf())
+data class Movie(val name: String, val year: String, val image: String, val description: String, val genre: String = "", val area: String = "", val actors: String = "", val director: String = "", val score: String = "", val updateTime: String = "", val hits: Long = 0L, val remarks: String = "", val lines: MutableList<PlayLine> = mutableListOf())
 
 data class Config(val sources: List<Source>, val refreshMinutes: Int) {
     companion object {

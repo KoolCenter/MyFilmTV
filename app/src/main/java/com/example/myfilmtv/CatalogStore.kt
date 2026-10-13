@@ -19,6 +19,7 @@ class CatalogStore(context: Context) : SQLiteOpenHelper(context, "myfilm_catalog
     private fun key(m: Movie) = m.name.trim().lowercase().replace(Regex("[\\s\\p{Punct}·]+"), "") + "|" + m.year.trim()
     private fun encode(m: Movie): String = JSONObject().apply {
         put("name", m.name); put("year", m.year); put("image", m.image); put("description", m.description)
+        put("genre",m.genre); put("area",m.area); put("actors",m.actors); put("director",m.director); put("score",m.score); put("updateTime",m.updateTime); put("hits",m.hits); put("remarks",m.remarks)
         put("lines", JSONArray().apply { m.lines.forEach { l -> put(JSONObject().apply {
             put("source",l.source); put("label",l.label)
             put("episodes", JSONArray().apply { l.episodes.forEach { e -> put(JSONArray().put(e.first).put(e.second)) } })
@@ -26,7 +27,7 @@ class CatalogStore(context: Context) : SQLiteOpenHelper(context, "myfilm_catalog
     }.toString()
     private fun decode(raw: String): Movie {
         val j = JSONObject(raw)
-        val m = Movie(j.optString("name"),j.optString("year"),j.optString("image"),j.optString("description"))
+        val m = Movie(j.optString("name"),j.optString("year"),j.optString("image"),j.optString("description"),j.optString("genre"),j.optString("area"),j.optString("actors"),j.optString("director"),j.optString("score"),j.optString("updateTime"),j.optLong("hits"),j.optString("remarks"))
         val lines=j.optJSONArray("lines") ?: JSONArray()
         for(i in 0 until lines.length()) { val l=lines.getJSONObject(i); val eps=l.optJSONArray("episodes") ?: JSONArray()
             val pairs=(0 until eps.length()).mapNotNull { k -> runCatching { eps.getJSONArray(k).let { it.getString(0) to it.getString(1) } }.getOrNull() }
