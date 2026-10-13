@@ -14,13 +14,13 @@ object Network {
     val pool = Executors.newFixedThreadPool(6)
     val main = Handler(Looper.getMainLooper())
     private val imageCache = object : android.util.LruCache<String, android.graphics.Bitmap>(50) {}
-    data class Category(val id: String, val name: String)
+    data class Category(val id: String, val name: String, val parentId: String = "")
     data class Page(val items: List<Movie>, val hasNext: Boolean)
     fun fetch(url: String): String {
         val conn = URL(url).openConnection() as HttpURLConnection
         conn.connectTimeout = 6500; conn.readTimeout = 8500
         conn.instanceFollowRedirects = true
-        conn.setRequestProperty("User-Agent", "MyFilmTV/0.2")
+        conn.setRequestProperty("User-Agent", "MyFilmTV/0.3")
         try {
             require(conn.responseCode in 200..299) { "HTTP ${conn.responseCode}" }
             return conn.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
@@ -37,7 +37,7 @@ object Network {
             val j = arr.optJSONObject(i) ?: return@mapNotNull null
             val id = j.optString("type_id")
             val name = j.optString("type_name")
-            if (id.isBlank() || name.isBlank()) null else Category(id, name)
+            if (id.isBlank() || name.isBlank()) null else Category(id, name, j.optString("type_pid"))
         }
     }
     fun categoryGroup(name: String): String? {

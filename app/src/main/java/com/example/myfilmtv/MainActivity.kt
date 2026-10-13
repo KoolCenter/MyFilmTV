@@ -17,6 +17,8 @@ import android.widget.*
 
 class MainActivity : Activity() {
     private val prefs by lazy { getSharedPreferences("myfilm", MODE_PRIVATE) }
+    private val store by lazy { CatalogStore(this) }
+    private val loader by lazy { CatalogLoader(store) }
     private lateinit var root: LinearLayout
     private lateinit var content: LinearLayout
     private lateinit var status: TextView
@@ -31,6 +33,10 @@ class MainActivity : Activity() {
     private val displayed = mutableListOf<Movie>()
     private var busy = false
     private var lastErrors = listOf<String>()
+    private var pageRequestRunning = false
+    private var rendering = false
+    private var lastRenderedCount = 0
+    private var categoryComplete = false
     private val tabs = listOf("home" to "首页", "movie" to "电影", "series" to "电视剧", "variety" to "综艺", "anime" to "动漫", "short" to "短剧")
 
     private fun dp(n: Int) = (n * resources.displayMetrics.density).toInt()
@@ -58,13 +64,14 @@ class MainActivity : Activity() {
             orientation=LinearLayout.VERTICAL; setPadding(dp(28),dp(16),dp(28),dp(12)); setBackgroundColor(Color.rgb(15,19,28))
         }
         setContentView(root)
+        loader.onPrefetched = { if(currentTab=="home" && ::content.isInitialized && !content.hasFocus()) drawHomeFromCache() }
         drawHeader()
         status=text("",13f).also { it.setTextColor(Color.rgb(175,190,207)); root.addView(it) }
         scroll=ScrollView(this).apply { isFillViewport=false; descendantFocusability=ViewGroup.FOCUS_AFTER_DESCENDANTS }
         content=LinearLayout(this).apply { orientation=LinearLayout.VERTICAL }
         scroll.addView(content)
         root.addView(scroll, LinearLayout.LayoutParams(-1,0,1f))
-        if(prefs.getString("url","").isNullOrBlank()) editUrl() else loadConfig()
+        if(prefs.getString("url","").isNullOrBlank()) editUrl() else { showCachedHome(); loadConfig() }
     }
     private fun drawHeader() {
         val row=LinearLayout(this).apply { orientation=LinearLayout.HORIZONTAL; gravity=Gravity.CENTER_VERTICAL }
@@ -99,109 +106,124 @@ class MainActivity : Activity() {
         }
     }
     private fun discover(conf: Config) {
-        status.text="正在识别资源站分类…"
+        status.text="正在更新资源站分类，缓存可立即浏览…"
         val token=++generation
+        sourceCats.clear()
+        conf.sources.filter{it.enabled}.forEach { s -> sourceCats[s.id]=store.categories(s.id) }
+        loader.configure(conf.sources,sourceCats)
+        loadTab()
         Network.pool.execute {
-            val results=mutableMapOf<String,List<Network.Category>>()
-            conf.sources.filter{it.enabled}.forEach { source ->
-                results[source.id]=runCatching { Network.categories(source) }.getOrDefault(emptyList())
-            }
-            Network.main.post {
-                if(token!=generation) return@post
-                sourceCats.clear(); sourceCats.putAll(results)
-                loadTab()
-            }
-        }
-    }
-    private fun groupSourceIds(source: Source, key: String): List<String> =
-        sourceCats[source.id].orEmpty().filter { Network.categoryGroup(it.name)==key }.map { it.id }.distinct()
-    private fun loadTab() {
-        val conf=config ?: return
-        val token=++generation
-        content.removeAllViews(); displayed.clear(); sourcePages.clear(); exhausted.clear(); busy=false
-        if(currentTab=="home") {
-            status.text="首页 · 分类栏目"
-            // A real category-scoped request per lane, not just relabelled latest results.
-            listOf("movie" to "最新电影", "series" to "最新电视剧", "anime" to "动漫精选", "variety" to "综艺更新").forEach { (key,title) ->
-                val header=text(title,21f,true).apply { setPadding(0,dp(14),0,dp(6)) }
-                content.addView(header)
-                val lane=LinearLayout(this).apply { orientation=LinearLayout.HORIZONTAL }
-                content.addView(HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled=false; addView(lane) })
-                Network.pool.execute {
-                    val groups=conf.sources.filter{it.enabled}.take(4).map { s ->
-                        val id=groupSourceIds(s,key).firstOrNull()
-                        if (id==null) emptyList() else runCatching { Network.page(s,typeId=id).items }.getOrDefault(emptyList())
-                    }
-                    val list=Network.merge(groups).take(14)
-                    Network.main.post { if(token==generation) {
-                        if(list.isEmpty()) { content.removeView(header); (lane.parent as? ViewGroup)?.let { content.removeView(it) } }
-                        else list.forEach { lane.addView(movieCard(it, dp(165)),LinearLayout.LayoutParams(dp(165),dp(236)).apply{rightMargin=dp(9)}) }
-                    } }
+            // Networks run concurrently; UI updates as each source becomes available.
+            val futures=conf.sources.filter{it.enabled}.map { s ->
+                Network.pool.submit<Pair<String,List<Network.Category>>> {
+                    s.id to runCatching { Network.categories(s) }.getOrDefault(store.categories(s.id))
                 }
             }
+            futures.forEach { f ->
+                val data=runCatching { f.get() }.getOrNull() ?: return@forEach
+                store.saveCategories(data.first,data.second)
+                Network.main.post {
+                    if(token!=generation) return@post
+                    sourceCats[data.first]=data.second
+                    loader.configure(conf.sources,sourceCats)
+                    if(currentTab=="home") drawHomeFromCache()
+                }
+            }
+            Network.main.post { if(token==generation) { loader.prefetch(); if(currentTab!="home") loadNext() } }
+        }
+    }
+    private fun showCachedHome() { currentTab="home"; drawHomeFromCache() }
+    private fun loadTab() {
+        loader.invalidate()
+        content.removeAllViews(); displayed.clear(); pageRequestRunning=false; lastRenderedCount=0; categoryComplete=false
+        if(currentTab=="home") {
+            drawHomeFromCache()
+            loader.prefetch()
         } else {
-            val title = if (currentTab=="search") "搜索：$searchTerm" else tabs.firstOrNull{it.first==currentTab}?.second.orEmpty()
-            content.addView(text(title,22f,true).apply { setPadding(0,dp(12),0,dp(8)) })
+            val title=if(currentTab=="search") "搜索：$searchTerm" else tabs.firstOrNull{it.first==currentTab}?.second.orEmpty()
+            content.addView(text("$title · 全部资源",22f,true).apply { setPadding(0,dp(12),0,dp(8)) })
             val grid=GridLayout(this).apply { columnCount=5; tag="moviegrid" }
             content.addView(grid)
-            content.addView(button("加载更多") { loadNext() }.apply { tag="more" },LinearLayout.LayoutParams(-1,dp(53)).apply { topMargin=dp(15) })
+            if(currentTab!="search") renderCatalog(store.movies(currentTab))
+            val indicator=text("正在获取更多影片…",14f).apply {tag="loading"}
+            content.addView(indicator)
+            val more=button("继续加载") { loadNext() }.apply {tag="more"}
+            content.addView(more,LinearLayout.LayoutParams(-1,dp(53)))
+            scroll.setOnScrollChangeListener { _:View, _:Int, y:Int, _:Int, _:Int ->
+                if(currentTab!="home" && !pageRequestRunning && y+scroll.height >= content.height-dp(550)) loadNext()
+            }
             loadNext()
         }
     }
+    private fun drawHomeFromCache() {
+        if(currentTab!="home") return
+        content.removeAllViews()
+        status.text="首页 · 缓存优先，后台同步片库"
+        val recent=store.recent().filter { it.position>0 && (it.duration<=0 || it.position<it.duration*0.95) }
+        if(recent.isNotEmpty()) {
+            content.addView(text("继续观看",21f,true))
+            val lane=LinearLayout(this).apply{orientation=LinearLayout.HORIZONTAL}
+            content.addView(HorizontalScrollView(this).apply { addView(lane) })
+            recent.take(12).forEach { p -> lane.addView(movieCard(p.movie,dp(165)) { play(p.movie,p.url,p.position) },LinearLayout.LayoutParams(dp(165),dp(236))) }
+        }
+        for ((group,label) in listOf("movie" to "最新电影","series" to "最新电视剧","anime" to "动漫精选","variety" to "综艺更新","short" to "短剧")) {
+            val movies=Network.merge(listOf(store.movies(group,80))).take(14)
+            if(movies.isEmpty()) continue
+            content.addView(text(label,21f,true).apply {setPadding(0,dp(14),0,dp(6))})
+            val lane=LinearLayout(this).apply {orientation=LinearLayout.HORIZONTAL}
+            content.addView(HorizontalScrollView(this).apply{isHorizontalScrollBarEnabled=false;addView(lane)})
+            movies.forEach { lane.addView(movieCard(it,dp(165)),LinearLayout.LayoutParams(dp(165),dp(236)).apply {rightMargin=dp(9)}) }
+            content.addView(button("查看全部 $label") { openTab(group) })
+        }
+        if(content.childCount==0) content.addView(text("正在首次建立片库缓存，请稍候…",20f))
+    }
+    private fun renderCatalog(movies:List<Movie>) {
+        val grid=content.findViewWithTag<GridLayout>("moviegrid") ?: return
+        if(rendering) return
+        rendering=true
+        val merged=Network.merge(listOf(movies))
+        val existing=displayed.map { it.name.trim().lowercase()+"|"+it.year }.toHashSet()
+        val additional=merged.filter { existing.add(it.name.trim().lowercase()+"|"+it.year) }
+        displayed.addAll(additional)
+        additional.forEach { m ->
+            val i=grid.childCount
+            grid.addView(movieCard(m,dp(168)),GridLayout.LayoutParams(GridLayout.spec(i/5),GridLayout.spec(i%5)).apply {
+                width=dp(168);height=dp(246);setMargins(dp(5),dp(5),dp(8),dp(7))
+            })
+        }
+        status.text="${tabs.firstOrNull{it.first==currentTab}?.second ?: "搜索"} · 已缓存 ${displayed.size} 部 · 滚动自动加载"
+        rendering=false
+    }
     private fun loadNext() {
-        val conf=config ?: return
-        if (busy) return
-        busy=true
-        val token=generation
-        status.text="正在加载 ${if(currentTab=="search") "搜索结果" else "分类影片"}…"
-        val active=conf.sources.filter{it.enabled}
-        Network.pool.execute {
-            val groups=mutableListOf<List<Movie>>()
-            val errors=mutableListOf<String>()
-            var attempted=0
-            active.forEach { s ->
-                val ids = if(currentTab=="search") listOf("") else groupSourceIds(s,currentTab)
-                ids.forEach { id ->
-                    val key="${s.id}:$id"
-                    if(key in exhausted) return@forEach
-                    attempted++
-                    val page=(sourcePages[key]?:0)+1
-                    runCatching { Network.page(s,search=searchTerm,page=page,typeId=id.ifBlank{null}) }
-                        .onSuccess { result ->
-                            groups.add(result.items)
-                            sourcePages[key]=page
-                            if(!result.hasNext || result.items.isEmpty()) exhausted.add(key)
-                        }.onFailure { errors.add(s.name); exhausted.add(key) }
-                }
-            }
-            val newItems=Network.merge(groups)
-            Network.main.post {
-                if (token!=generation) return@post
-                busy=false; lastErrors=errors.distinct()
-                val existing=displayed.map { it.name.trim().lowercase()+"|"+it.year }.toHashSet()
-                val additional=newItems.filter { existing.add(it.name.trim().lowercase()+"|"+it.year) }
-                displayed.addAll(additional)
-                val grid=content.findViewWithTag<GridLayout>("moviegrid")
-                additional.forEach { movie ->
-                    val i=grid.childCount
-                    grid.addView(movieCard(movie,dp(168)),GridLayout.LayoutParams(GridLayout.spec(i/5),GridLayout.spec(i%5)).apply {
-                        width=dp(168); height=dp(246); setMargins(dp(5),dp(5),dp(8),dp(7))
-                    })
-                }
-                status.text="共 ${displayed.size} 部 · ${active.size-lastErrors.size}/${active.size} 个资源站正常" + if(lastErrors.isNotEmpty()) " · ${lastErrors.size} 个站点请求异常" else ""
-                content.findViewWithTag<View>("more")?.visibility=if(attempted==0 || (additional.isEmpty() && exhausted.size>=attempted)) View.GONE else View.VISIBLE
-                if(grid.childCount>0 && grid.findFocus()==null && currentFocus==null) grid.getChildAt(0).requestFocus()
-                if(displayed.isEmpty()) status.text="暂无匹配内容；可切换分类或资源站"
-            }
+        if(pageRequestRunning || categoryComplete || config==null) return
+        if(currentTab=="search") { searchNext(); return }
+        pageRequestRunning=true
+        val group=currentTab
+        content.findViewWithTag<TextView>("loading")?.text="正在加载更多 $group …"
+        loader.foreground(group) { movies, _, hasMore ->
+            if(currentTab!=group) return@foreground
+            renderCatalog(movies)
+            pageRequestRunning=false
+            categoryComplete = !hasMore
+            content.findViewWithTag<TextView>("loading")?.text=if(hasMore) "已加载 ${displayed.size} 部，继续滚动获取更多" else "当前没有可继续加载的页面"
         }
     }
-    private fun movieCard(m: Movie,width: Int): View {
+    private fun searchNext() {
+        val conf=config ?: return
+        pageRequestRunning=true
+        val token=generation
+        Network.pool.execute {
+            val results=conf.sources.filter{it.enabled}.map { s -> runCatching { Network.page(s,search=searchTerm).items }.getOrDefault(emptyList()) }
+            Network.main.post { if(token==generation) {renderCatalog(Network.merge(results));pageRequestRunning=false} }
+        }
+    }
+    private fun movieCard(m: Movie,width: Int, action: (() -> Unit)? = null): View {
         val card=LinearLayout(this).apply { orientation=LinearLayout.VERTICAL; setPadding(dp(6),dp(6),dp(6),dp(7)); isFocusable=true; background=shape(Color.rgb(35,43,57)) }
         val poster=ImageView(this).apply { scaleType=ImageView.ScaleType.CENTER_CROP; setBackgroundColor(Color.rgb(48,58,72)) }
         card.addView(poster,LinearLayout.LayoutParams(-1,dp(158))); Network.image(m.image,poster)
         card.addView(text(m.name.take(19),14f,true),LinearLayout.LayoutParams(-1,dp(42)))
         card.addView(text("${m.year} · ${m.lines.size} 线路",11f))
-        card.setOnClickListener { showMovie(m) }
+        card.setOnClickListener { if(action==null) showMovie(m) else action() }
         card.setOnFocusChangeListener { _, focus ->
             card.background=shape(if(focus) Color.rgb(35,94,144) else Color.rgb(35,43,57),focus)
             card.scaleX=if(focus)1.035f else 1f; card.scaleY=if(focus)1.035f else 1f
@@ -213,9 +235,18 @@ class MainActivity : Activity() {
         if(episodes.isEmpty()) { toast("没有可直接播放的线路"); return }
         AlertDialog.Builder(this).setTitle(m.name)
             .setItems(episodes.map { "${it.first.source} · ${it.first.label} · ${it.second}" }.toTypedArray()) { _,which ->
-                startActivity(Intent(this,PlayerActivity::class.java).putExtra("url",episodes[which].third))
+                play(m,episodes[which].third,0L)
             }.setNegativeButton("返回",null).show()
     }
+    private fun play(m:Movie,url:String,position:Long) {
+        val intent=Intent(this,PlayerActivity::class.java).putExtra("url",url).putExtra("position",position)
+            .putExtra("film",m.name).putExtra("year",m.year).putExtra("poster",m.image)
+            .putExtra("movieJson", org.json.JSONObject().put("name",m.name).put("year",m.year).put("image",m.image).put("description",m.description).toString())
+        startActivity(intent)
+    }
+    override fun onResume() { super.onResume(); if(::content.isInitialized && currentTab=="home") drawHomeFromCache(); if(config!=null) loader.resume() }
+    override fun onStop() { loader.pause(); super.onStop() }
+    override fun onDestroy() { loader.shutdown(); store.close(); super.onDestroy() }
     private fun editUrl() {
         val field=EditText(this).apply {
             setSingleLine(true); setText(prefs.getString("url","")); hint="https://.../sources.json"
