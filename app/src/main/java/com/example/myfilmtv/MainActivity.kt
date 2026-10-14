@@ -291,25 +291,48 @@ class MainActivity : Activity() {
         return card
     }
     private fun showMovie(m: Movie) {
-        val episodes=m.lines.flatMap { l -> l.episodes.map { Triple(l,it.first,it.second) } }
-        if(episodes.isEmpty()) { toast("没有可直接播放的线路"); return }
-        val summary=listOfNotNull(
-            listOf(m.year,m.area,m.genre).filter {it.isNotBlank()}.joinToString("  ·  ").takeIf {it.isNotBlank()},
-            m.score.takeIf {it.isNotBlank()}?.let {"评分：$it（资源站）"},
-            m.director.takeIf {it.isNotBlank()}?.let {"导演：$it"},
-            m.actors.takeIf {it.isNotBlank()}?.let {"主演：${it.take(100)}"},
-            m.remarks.takeIf {it.isNotBlank()}?.let {"状态：$it"},
-            m.description.takeIf {it.isNotBlank()}?.take(330)
+        val episodes = m.lines.flatMap { line -> line.episodes.map { Triple(line, it.first, it.second) } }
+        if (episodes.isEmpty()) { toast("没有可直接播放的线路"); return }
+        val summary = listOfNotNull(
+            listOf(m.year,m.area,m.genre).filter { it.isNotBlank() }.joinToString("  ·  ").takeIf { it.isNotBlank() },
+            m.score.takeIf { it.isNotBlank() }?.let { "评分：$it（资源站）" },
+            m.director.takeIf { it.isNotBlank() }?.let { "导演：$it" },
+            m.actors.takeIf { it.isNotBlank() }?.let { "主演：$it" },
+            m.remarks.takeIf { it.isNotBlank() }?.let { "状态：$it" },
+            m.description.takeIf { it.isNotBlank() }
         ).joinToString("\n\n")
-        val lines=episodes.map { "${it.first.source} · ${it.first.label} · ${it.second}" }
-        val pane=LinearLayout(this).apply { orientation=LinearLayout.VERTICAL; setPadding(dp(20),dp(8),dp(20),dp(8)) }
-        if(summary.isNotBlank()) pane.addView(text(summary,15f).apply {setPadding(0,0,0,dp(12))})
-        pane.addView(text("选择播放线路 / 集数",18f,true))
-        val list=ListView(this).apply { adapter=ArrayAdapter(this@MainActivity,android.R.layout.simple_list_item_1,lines); isFocusable=true }
-        pane.addView(list,LinearLayout.LayoutParams(-1,dp(260)))
-        val dialog=AlertDialog.Builder(this).setTitle(m.name).setView(pane).setNegativeButton("返回",null).create()
+        val labels = episodes.map { "${it.first.source} · ${it.first.label} · ${it.second}" }
+
+        // Playback choices are always visible and receive initial D-pad focus.
+        // The synopsis below scrolls independently and cannot push the lines off-screen.
+        val pane = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(18),dp(8),dp(18),dp(8))
+        }
+        pane.addView(text("播放线路 / 选集（OK 播放）",18f,true))
+        val list = ListView(this).apply {
+            adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_list_item_1, labels)
+            isFocusable = true
+            isFocusableInTouchMode = true
+            choiceMode = ListView.CHOICE_MODE_SINGLE
+        }
+        pane.addView(list, LinearLayout.LayoutParams(-1, dp(225)))
+        if (summary.isNotBlank()) {
+            pane.addView(text("影片资料（下方可滚动）",16f,true))
+            val descScroll = ScrollView(this).apply {
+                isFillViewport = false
+                isVerticalScrollBarEnabled = true
+                isFocusable = true
+                addView(text(summary,15f).apply { setPadding(dp(6),dp(5),dp(6),dp(8)) })
+            }
+            pane.addView(descScroll, LinearLayout.LayoutParams(-1,dp(135)))
+        }
+        val dialog = AlertDialog.Builder(this).setTitle(m.name).setView(pane).setNegativeButton("返回",null).create()
         list.setOnItemClickListener { _,_,which,_ -> dialog.dismiss(); play(m,episodes[which].third,0L) }
-        dialog.show();list.requestFocus()
+        dialog.show()
+        dialog.window?.setLayout((resources.displayMetrics.widthPixels * 0.84).toInt(), -2)
+        list.requestFocus()
+        list.setSelection(0)
     }
     private fun play(m:Movie,url:String,position:Long) {
         val intent=Intent(this,PlayerActivity::class.java).putExtra("url",url).putExtra("position",position)
