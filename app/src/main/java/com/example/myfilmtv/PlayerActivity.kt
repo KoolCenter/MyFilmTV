@@ -7,6 +7,12 @@ import android.view.Gravity
 import android.view.KeyEvent
 import android.view.View
 import android.view.WindowManager
+import android.webkit.WebChromeClient
+import android.webkit.WebView
+import android.webkit.WebViewClient
+import android.webkit.WebResourceRequest
+import android.webkit.WebResourceError
+import android.webkit.WebResourceResponse
 import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.LinearLayout
@@ -26,6 +32,9 @@ import androidx.media3.datasource.HttpDataSource
 
 class PlayerActivity : Activity() {
     private var player: ExoPlayer? = null
+    private var cloudView: WebView? = null
+    private var customVideo: View? = null
+    private var customVideoCallback: WebChromeClient.CustomViewCallback? = null
     private val store by lazy { CatalogStore(this) }
     private var movie: Movie? = null
     private var playbackUrl = ""
@@ -78,6 +87,81 @@ class PlayerActivity : Activity() {
         setContentView(frame)
         resumePosition=intent.getLongExtra("position",0L)
         startPlayback(playerView)
+    }
+
+    // The MacCMS "feifan" source is a hosted browser player, not a media container.
+    // Keep its original URL; other providers continue using Media3.
+    private fun openFeifanWebPlayer(view: PlayerView) {
+        val uri = android.net.Uri.parse(playbackUrl)
+        if (uri.scheme !in listOf("https", "http")) {
+            status.text = "非凡云播放地址无效"
+            overlay.visibility = View.VISIBLE
+            return
+        }
+        player?.release()
+        player = null
+        view.visibility = View.GONE
+        cloudView?.let { old -> (old.parent as? FrameLayout)?.removeView(old); old.destroy() }
+        val page = WebView(this)
+        cloudView = page
+        page.setBackgroundColor(Color.BLACK)
+        page.settings.javaScriptEnabled = true
+        page.settings.domStorageEnabled = true
+        page.settings.mediaPlaybackRequiresUserGesture = false
+        page.settings.loadWithOverviewMode = true
+        page.settings.useWideViewPort = true
+        page.isFocusable = true
+        page.isFocusableInTouchMode = true
+        val root = view.parent as FrameLayout
+        root.addView(page, 1, FrameLayout.LayoutParams(-1, -1))
+        page.webChromeClient = object : WebChromeClient() {
+            override fun onShowCustomView(v: View, callback: CustomViewCallback) {
+                if (customVideo != null) { callback.onCustomViewHidden(); return }
+                customVideo = v
+                customVideoCallback = callback
+                root.addView(v, FrameLayout.LayoutParams(-1, -1))
+                overlay.visibility = View.GONE
+                v.requestFocus()
+            }
+            override fun onHideCustomView() {
+                customVideo?.let { root.removeView(it) }
+                customVideo = null
+                customVideoCallback?.onCustomViewHidden()
+                customVideoCallback = null
+                page.requestFocus()
+            }
+        }
+        page.webViewClient = object : WebViewClient() {
+            private var mainFrameFailed = false
+            override fun onPageFinished(v: WebView, url: String) {
+                if (!mainFrameFailed) overlay.visibility = View.GONE
+                v.requestFocus()
+            }
+            override fun onReceivedError(v: WebView, req: WebResourceRequest, error: WebResourceError) {
+                if (req.isForMainFrame) {
+                    mainFrameFailed = true
+                    status.text = "非凡云页面加载失败：${error.description}"
+                    overlay.visibility = View.VISIBLE
+                    retry.visibility = View.VISIBLE
+                }
+            }
+            override fun onReceivedHttpError(v: WebView, req: WebResourceRequest, response: WebResourceResponse) {
+                if (req.isForMainFrame) {
+                    mainFrameFailed = true
+                    status.text = "非凡云页面返回 HTTP ${response.statusCode}"
+                    overlay.visibility = View.VISIBLE
+                    retry.visibility = View.VISIBLE
+                }
+            }
+        }
+        overlay.visibility = View.VISIBLE
+        status.text = "正在加载非凡云播放器…"
+        retry.visibility = View.GONE
+        val headers = runCatching {
+            val j = JSONObject(intent.getStringExtra("headers") ?: "{}")
+            j.keys().asSequence().associateWith { j.getString(it) }
+        }.getOrDefault(emptyMap())
+        page.loadUrl(playbackUrl, headers)
     }
 
     // Probe only the ambiguous "feifan" line. HLS-labelled lines keep their
@@ -143,8 +227,8 @@ class PlayerActivity : Activity() {
     }
 
     private fun startPlayback(view: PlayerView, probedMime: String? = null, skipProbe: Boolean = false) {
-        if (!skipProbe && intent.getStringExtra("playFrom").orEmpty().equals("feifan", ignoreCase = true)) {
-            inspectFeifan(view)
+        if (intent.getStringExtra("playFrom").orEmpty().equals("feifan", ignoreCase = true)) {
+            openFeifanWebPlayer(view)
             return
         }
         player?.let { if(it.currentPosition>0) resumePosition=it.currentPosition; it.release() }
@@ -247,6 +331,10 @@ class PlayerActivity : Activity() {
     override fun onPause() { saveProgress(); super.onPause() }
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
         if (keyCode == KeyEvent.KEYCODE_BACK || keyCode == KeyEvent.KEYCODE_ESCAPE) {
+            if (customVideo != null) {
+                cloudView?.webChromeClient?.onHideCustomView()
+                return true
+            }
             finish()
             return true
         }
@@ -258,6 +346,6 @@ class PlayerActivity : Activity() {
             else -> super.onKeyDown(keyCode, event)
         }
     }
-    override fun onStop() { saveProgress(); player?.release(); player = null; super.onStop() }
-    override fun onDestroy() { store.close(); super.onDestroy() }
+    override fun onStop() { saveProgress(); cloudView?.onPause(); player?.release(); player = null; super.onStop() }
+    override fun onDestroy() { cloudView?.destroy(); cloudView = null; store.close(); super.onDestroy() }
 }
