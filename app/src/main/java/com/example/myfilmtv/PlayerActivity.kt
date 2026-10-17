@@ -90,10 +90,21 @@ class PlayerActivity : Activity() {
         view.hideController()
 
         // Media3 cannot decode webpage URLs or some proprietary play-line formats.
-        val uri = android.net.Uri.parse(playbackUrl)
+        val originalUri = android.net.Uri.parse(playbackUrl)
+        val prefs = getSharedPreferences("myfilm", MODE_PRIVATE)
+        val gateway = prefs.getString("hls_gateway_url", "").orEmpty().trim().trimEnd('/')
+        val gatewayToken = prefs.getString("hls_gateway_token", "").orEmpty().trim()
+        val useGateway = gateway.startsWith("https://") && gatewayToken.isNotBlank() &&
+            Regex("v[0-9]+\\.rstu6\\.com", RegexOption.IGNORE_CASE).matches(originalUri.host.orEmpty()) &&
+            originalUri.scheme == "https" && originalUri.path.orEmpty().endsWith(".m3u8", ignoreCase = true)
+        val uri = if (useGateway) {
+            android.net.Uri.parse("$gateway/hls").buildUpon()
+                .appendQueryParameter("url", playbackUrl)
+                .appendQueryParameter("token", gatewayToken).build()
+        } else originalUri
         val path = uri.path.orEmpty().lowercase(Locale.ROOT)
         val mime = when {
-            path.endsWith(".m3u8") -> MimeTypes.APPLICATION_M3U8
+            useGateway || path.endsWith(".m3u8") -> MimeTypes.APPLICATION_M3U8
             path.endsWith(".mpd") -> MimeTypes.APPLICATION_MPD
             else -> null
         }
