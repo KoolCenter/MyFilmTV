@@ -144,7 +144,7 @@ class MainActivity : Activity() {
     private fun showCachedHome() { currentTab="home"; drawHomeFromCache() }
     private fun loadTab() {
         loader.invalidate()
-        content.removeAllViews(); displayed.clear(); pageRequestRunning=false; lastRenderedCount=0; categoryComplete=false; renderedLimit=30; pageOffset=0; localSearchOffset=0
+        content.removeAllViews(); displayed.clear(); pageRequestRunning=false; lastRenderedCount=0; categoryComplete=false; renderedLimit=50; pageOffset=0; localSearchOffset=0
         if(currentTab=="home") {
             drawHomeFromCache()
             loader.prefetch()
@@ -154,7 +154,7 @@ class MainActivity : Activity() {
             if(currentTab!="search") addFilters()
             val grid=GridLayout(this).apply { columnCount=5; tag="moviegrid" }
             content.addView(grid)
-            if(currentTab!="search") renderCatalog(store.movies(currentTab,renderedLimit,pageOffset)) else renderCatalog(store.search(searchTerm,renderedLimit,pageOffset))
+            if(currentTab!="search") renderCatalog(store.movies(currentTab,renderedLimit)) else renderCatalog(store.search(searchTerm,renderedLimit))
             val indicator=text("正在获取更多影片…",14f).apply {tag="loading"}
             content.addView(indicator)
             val more=button("继续加载") { loadNext() }.apply {tag="more"}
@@ -240,73 +240,76 @@ class MainActivity : Activity() {
             else -> list.sortedWith(compareByDescending<Movie> { it.updateTime }.thenByDescending { it.year })
         }
     }
+    // Reset only when changing filters; never reset the grid for a next-page request.
+    private fun resetCatalogView() {
+        val grid=content.findViewWithTag<GridLayout>("moviegrid") ?: return
+        grid.removeAllViews()
+        displayed.clear()
+        renderedLimit=50
+        scroll.scrollTo(0,0)
+        pageRequestRunning=false
+        categoryComplete=false
+    }
     private fun refreshCatalog() {
         if(currentTab=="home" || currentTab=="search") return
-        renderCatalog(store.movies(currentTab,renderedLimit,pageOffset))
+        renderCatalog(store.movies(currentTab,renderedLimit))
     }
     private fun renderCatalog(movies:List<Movie>) {
         val grid=content.findViewWithTag<GridLayout>("moviegrid") ?: return
         if(rendering) return
         rendering=true
-        val selected=filtered(movies).take(30)
-        // Rebuild only if the ordered visible result set changed. Focus returns to the same cell.
-        val focusBefore=grid.findFocus()
-        val oldFocus=if(focusBefore!=null) grid.indexOfChild(focusBefore).coerceAtLeast(0) else -1
-        val signatures=selected.map { it.sourceId+"|"+it.vodId+"|"+it.name }
-        val oldSignatures=displayed.map { it.sourceId+"|"+it.vodId+"|"+it.name }
-        if(signatures!=oldSignatures) {
-            grid.removeAllViews(); displayed.clear();displayed.addAll(selected)
-            selected.forEachIndexed { i,m ->
+        try {
+            // Append unseen movies, keeping previous cards and D-pad focus intact.
+            val known=displayed.mapTo(HashSet()) { it.sourceId+"|"+it.vodId+"|"+it.name }
+            val additions=filtered(movies).filter { m ->
+                known.add(m.sourceId+"|"+m.vodId+"|"+m.name)
+            }
+            additions.forEach { m ->
+                val i=displayed.size
+                displayed.add(m)
                 grid.addView(movieCard(m,dp(168)),GridLayout.LayoutParams(GridLayout.spec(i/5),GridLayout.spec(i%5)).apply {
                     width=dp(168);height=dp(246);setMargins(dp(5),dp(5),dp(8),dp(7))
                 })
             }
-            if(oldFocus>=0 && grid.childCount>0) grid.getChildAt(oldFocus.coerceAtMost(grid.childCount-1)).requestFocus()
-        }
-        status.text="${tabs.firstOrNull{it.first==currentTab}?.second ?: "搜索"} · 当前筛选 ${displayed.size} 部（来自已缓存目录）· 后台仍在补充"
-        rendering=false
+            status.text="${tabs.firstOrNull{it.first==currentTab}?.second ?: "搜索"} · 已展示 ${displayed.size} 部 · 向上可返回之前影片"
+        } finally { rendering=false }
     }
     private fun loadNext() {
-        if(pageRequestRunning || config==null) return
+        if(pageRequestRunning || categoryComplete || config==null) return
         if(currentTab=="search") { searchNext(); return }
         val group=currentTab
         if(group=="home") return
-        val nextOffset=pageOffset+renderedLimit
-        fun showNext() {
-            pageOffset=nextOffset
-            renderCatalog(store.movies(group,renderedLimit,pageOffset))
-            scroll.smoothScrollTo(0,0)
-        }
-        if(store.count(group)>nextOffset) { showNext(); return }
-        if(categoryComplete) {
-            content.findViewWithTag<TextView>("loading")?.text="已到最后一页"
+        pageRequestRunning=true
+        // Read an expanding prefix of the local library; renderCatalog only appends unseen items.
+        if(store.count(group)>renderedLimit) {
+            renderedLimit+=50
+            renderCatalog(store.movies(group,renderedLimit))
+            pageRequestRunning=false
             return
         }
-        pageRequestRunning=true
-        content.findViewWithTag<TextView>("loading")?.text="正在获取下一页…"
+        content.findViewWithTag<TextView>("loading")?.text="正在加载更多影片…"
         loader.foreground(group) { _, _, hasMore ->
-            if(currentTab!=group) return@foreground
+            if(currentTab!=group) { pageRequestRunning=false; return@foreground }
+            renderedLimit+=50
+            renderCatalog(store.movies(group,renderedLimit))
             pageRequestRunning=false
-            categoryComplete=!hasMore
-            if(store.count(group)>nextOffset) showNext()
-            else content.findViewWithTag<TextView>("loading")?.text="没有更多影片"
+            categoryComplete = !hasMore && store.count(group)<=renderedLimit
+            content.findViewWithTag<TextView>("loading")?.text=if(categoryComplete) "已经到达当前片库末尾" else "已展示 ${displayed.size} 部，继续向下浏览"
         }
     }
     private fun searchNext() {
         if(pageRequestRunning) return
         pageRequestRunning=true
-        pageOffset+=renderedLimit
+        renderedLimit+=50
         val query=searchTerm
         val tabToken=generation
-        val offset=pageOffset
         Network.pool.execute {
-            val local=store.search(query,renderedLimit,offset)
+            val local=store.search(query,renderedLimit)
             Network.main.post {
                 if(tabToken==generation && currentTab=="search") {
                     renderCatalog(local)
                     pageRequestRunning=false
-                    scroll.smoothScrollTo(0,0)
-                    content.findViewWithTag<TextView>("loading")?.text="搜索结果：每页最多 30 部"
+                    content.findViewWithTag<TextView>("loading")?.text="本地搜索：已加载 ${local.size} 条"
                 }
             }
         }
