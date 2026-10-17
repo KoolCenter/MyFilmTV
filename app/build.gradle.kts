@@ -2,7 +2,7 @@ plugins { id("com.android.application"); id("org.jetbrains.kotlin.android") }
 android {
     namespace = "com.example.myfilmtv"
     compileSdk = 36
-    defaultConfig { applicationId = "com.example.myfilmtv"; minSdk = 24; targetSdk = 35; versionCode = 7; versionName = "0.7" }
+    defaultConfig { applicationId = "com.example.myfilmtv"; minSdk = 24; targetSdk = 35; versionCode = 8; versionName = "0.8" }
     signingConfigs {
         create("persistent") {
             storeFile = file(System.getenv("MYFILM_KEYSTORE") ?: "myfilm-release.jks")
