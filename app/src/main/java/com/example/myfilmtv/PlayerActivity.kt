@@ -29,6 +29,7 @@ class PlayerActivity : Activity() {
     private val store by lazy { CatalogStore(this) }
     private var movie: Movie? = null
     private var playbackUrl = ""
+    private lateinit var overlay: LinearLayout
     private lateinit var status: TextView
     private lateinit var retry: Button
     private var resumePosition=0L
@@ -45,16 +46,19 @@ class PlayerActivity : Activity() {
         val frame = FrameLayout(this)
         val playerView = PlayerView(this).apply {
             useController = true
+            controllerAutoShow = false
+            controllerShowTimeoutMs = 3000
             isFocusable = true
             requestFocus()
         }
         frame.addView(playerView, FrameLayout.LayoutParams(-1, -1))
 
-        val overlay = LinearLayout(this).apply {
+        overlay = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
             setPadding(24, 12, 24, 12)
             setBackgroundColor(0xCC101820.toInt())
+            visibility = View.GONE
         }
         status = TextView(this).apply {
             text = "正在连接视频…"
@@ -70,7 +74,7 @@ class PlayerActivity : Activity() {
         }
         overlay.addView(status)
         overlay.addView(retry)
-        frame.addView(overlay, FrameLayout.LayoutParams(-1, -2, Gravity.CENTER))
+        frame.addView(overlay, FrameLayout.LayoutParams(-2, -2, Gravity.CENTER))
         setContentView(frame)
         resumePosition=intent.getLongExtra("position",0L)
         startPlayback(playerView)
@@ -79,9 +83,11 @@ class PlayerActivity : Activity() {
     private fun startPlayback(view: PlayerView) {
         player?.let { if(it.currentPosition>0) resumePosition=it.currentPosition; it.release() }
         player = null
+        overlay.visibility = View.VISIBLE
         status.visibility = View.VISIBLE
         status.text = "正在连接视频…"
         retry.visibility = View.GONE
+        view.hideController()
 
         // Media3 cannot decode webpage URLs or some proprietary play-line formats.
         val uri = android.net.Uri.parse(playbackUrl)
@@ -111,12 +117,14 @@ class PlayerActivity : Activity() {
             override fun onPlaybackStateChanged(state: Int) {
                 when (state) {
                     Player.STATE_BUFFERING -> {
+                        overlay.visibility = View.VISIBLE
                         status.visibility = View.VISIBLE
                         status.text = "正在缓冲视频…"
                     }
-                    Player.STATE_READY -> status.visibility = View.GONE
-                    Player.STATE_ENDED -> status.visibility = View.GONE
+                    Player.STATE_READY -> { overlay.visibility = View.GONE; view.hideController() }
+                    Player.STATE_ENDED -> overlay.visibility = View.GONE
                     Player.STATE_IDLE -> if (p.playerError == null) {
+                        overlay.visibility = View.VISIBLE
                         status.visibility = View.VISIBLE
                         status.text = "等待视频数据…"
                     }
@@ -131,6 +139,7 @@ class PlayerActivity : Activity() {
                 val address = runCatching { uri.host.orEmpty() }.getOrDefault("")
                 val reason = if (httpError != null) "HTTP ${httpError.responseCode}（$address）" else error.errorCodeName
                 status.text = "播放失败：$reason\n${detail.take(180)}\n\n可更换线路或返回详情。"
+                overlay.visibility = View.VISIBLE
                 status.visibility = View.VISIBLE
                 retry.visibility = View.VISIBLE
             }
