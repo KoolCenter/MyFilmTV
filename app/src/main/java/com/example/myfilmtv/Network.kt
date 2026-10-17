@@ -20,7 +20,7 @@ object Network {
         val conn = URL(url).openConnection() as HttpURLConnection
         conn.connectTimeout = 6500; conn.readTimeout = 8500
         conn.instanceFollowRedirects = true
-        conn.setRequestProperty("User-Agent", "MyFilmTV/0.3")
+        
         try {
             require(conn.responseCode in 200..299) { "HTTP ${conn.responseCode}" }
             return conn.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
@@ -72,7 +72,7 @@ object Network {
             j.optString("vod_content").replace(Regex("<[^>]+>"), " ").replace("&nbsp;", " ").trim(),
             j.optString("vod_class"), j.optString("vod_area"), j.optString("vod_actor"),
             j.optString("vod_director"), j.optString("vod_score"), j.optString("vod_time"),
-            j.optLong("vod_hits"), j.optString("vod_remarks"))
+            j.optLong("vod_hits"), j.optString("vod_remarks"), s.id, j.optString("vod_id"))
         val names = j.optString("vod_play_from").split("\$\$\$")
         j.optString("vod_play_url").split("\$\$\$").forEachIndexed { i, section ->
             val episodes = section.split('#').mapNotNull { ep ->
@@ -86,18 +86,21 @@ object Network {
         }
         return movie
     }
+    fun detail(source:Source, vodId:String): Movie? {
+        if (vodId.isBlank()) return null
+        val root=JSONObject(fetch(endpoint(source.api, "ac" to "detail", "ids" to vodId)))
+        val list=root.optJSONArray("list") ?: return null
+        return if(list.length()>0) parseMovie(source,list.getJSONObject(0)) else null
+    }
+    // Never conflate different providers or editions by guessing from a title.
+    // Keep independent source/vod identities and preserve every playback line.
     fun merge(groups: List<List<Movie>>): List<Movie> {
-        val map = linkedMapOf<String, Movie>()
+        val unique=linkedMapOf<String,Movie>()
         groups.flatten().forEach { m ->
-            val key = m.name.trim().lowercase().replace(Regex("[\\s\\p{Punct}·]+"), "") + "|" + m.year
-            val old = map[key]
-            if (old == null) map[key] = m
-            else {
-                old.lines.addAll(m.lines)
-                if (old.image.isBlank() && m.image.isNotBlank()) map[key] = old.copy(image = m.image)
-            }
+            val id=if (m.vodId.isNotBlank()) m.vodId else m.name+"|"+m.year
+            unique.putIfAbsent(m.sourceId+"|"+id,m)
         }
-        return map.values.toList()
+        return unique.values.toList()
     }
     fun image(url: String, view: ImageView) {
         view.tag = url

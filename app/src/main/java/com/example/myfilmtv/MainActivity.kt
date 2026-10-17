@@ -37,12 +37,14 @@ class MainActivity : Activity() {
     private var rendering = false
     private var lastRenderedCount = 0
     private var categoryComplete = false
+    private var renderedLimit=50
+    private var localSearchOffset=0
     private var selectedGenre = "全部"
     private var selectedYear = "全部"
     private var selectedSort = "最近更新"
     private val genreOptions = listOf("全部", "动作", "喜剧", "科幻", "剧情", "悬疑", "惊悚", "恐怖", "爱情", "动画", "犯罪", "纪录")
     private val yearOptions = listOf("全部", "2026", "2025", "2024", "2023", "2022", "2021", "2020", "2010年代", "更早")
-    private val sortOptions = listOf("最近更新", "上映年份", "评分优先", "来源热度")
+    private val sortOptions = listOf("最近更新", "上映年份", "评分优先")
     private val tabs = listOf("home" to "首页", "movie" to "电影", "series" to "电视剧", "variety" to "综艺", "anime" to "动漫", "short" to "短剧")
 
     private fun dp(n: Int) = (n * resources.displayMetrics.density).toInt()
@@ -141,7 +143,7 @@ class MainActivity : Activity() {
     private fun showCachedHome() { currentTab="home"; drawHomeFromCache() }
     private fun loadTab() {
         loader.invalidate()
-        content.removeAllViews(); displayed.clear(); pageRequestRunning=false; lastRenderedCount=0; categoryComplete=false
+        content.removeAllViews(); displayed.clear(); pageRequestRunning=false; lastRenderedCount=0; categoryComplete=false; renderedLimit=50; localSearchOffset=0
         if(currentTab=="home") {
             drawHomeFromCache()
             loader.prefetch()
@@ -151,7 +153,7 @@ class MainActivity : Activity() {
             if(currentTab!="search") addFilters()
             val grid=GridLayout(this).apply { columnCount=5; tag="moviegrid" }
             content.addView(grid)
-            if(currentTab!="search") renderCatalog(store.movies(currentTab))
+            if(currentTab!="search") renderCatalog(store.movies(currentTab,renderedLimit)) else renderCatalog(store.search(searchTerm,renderedLimit))
             val indicator=text("正在获取更多影片…",14f).apply {tag="loading"}
             content.addView(indicator)
             val more=button("继续加载") { loadNext() }.apply {tag="more"}
@@ -230,7 +232,7 @@ class MainActivity : Activity() {
     }
     private fun refreshCatalog() {
         if(currentTab=="home" || currentTab=="search") return
-        renderCatalog(store.movies(currentTab))
+        renderCatalog(store.movies(currentTab,renderedLimit))
     }
     private fun renderCatalog(movies:List<Movie>) {
         val grid=content.findViewWithTag<GridLayout>("moviegrid") ?: return
@@ -240,8 +242,8 @@ class MainActivity : Activity() {
         // Rebuild only if the ordered visible result set changed. Focus returns to the same cell.
         val focusBefore=grid.findFocus()
         val oldFocus=if(focusBefore!=null) grid.indexOfChild(focusBefore).coerceAtLeast(0) else -1
-        val signatures=selected.map { it.name.trim().lowercase()+"|"+it.year }
-        val oldSignatures=displayed.map { it.name.trim().lowercase()+"|"+it.year }
+        val signatures=selected.map { it.sourceId+"|"+it.vodId+"|"+it.name }
+        val oldSignatures=displayed.map { it.sourceId+"|"+it.vodId+"|"+it.name }
         if(signatures!=oldSignatures) {
             grid.removeAllViews(); displayed.clear();displayed.addAll(selected)
             selected.forEachIndexed { i,m ->
@@ -259,22 +261,36 @@ class MainActivity : Activity() {
         if(currentTab=="search") { searchNext(); return }
         pageRequestRunning=true
         val group=currentTab
+        if(store.count(group)>renderedLimit) {
+            renderedLimit+=50
+            renderCatalog(store.movies(group,renderedLimit))
+            pageRequestRunning=false
+            return
+        }
         content.findViewWithTag<TextView>("loading")?.text="正在加载更多 $group …"
         loader.foreground(group) { movies, _, hasMore ->
             if(currentTab!=group) return@foreground
-            renderCatalog(movies)
+            renderCatalog(store.movies(group,renderedLimit))
             pageRequestRunning=false
             categoryComplete = !hasMore
             content.findViewWithTag<TextView>("loading")?.text=if(hasMore) "已加载 ${displayed.size} 部，继续滚动获取更多" else "当前没有可继续加载的页面"
         }
     }
     private fun searchNext() {
-        val conf=config ?: return
+        if(pageRequestRunning) return
         pageRequestRunning=true
-        val token=generation
+        renderedLimit+=50
+        val query=searchTerm
+        val tabToken=generation
         Network.pool.execute {
-            val results=conf.sources.filter{it.enabled}.map { s -> runCatching { Network.page(s,search=searchTerm).items }.getOrDefault(emptyList()) }
-            Network.main.post { if(token==generation) {renderCatalog(Network.merge(results));pageRequestRunning=false} }
+            val local=store.search(query,renderedLimit)
+            Network.main.post {
+                if(tabToken==generation && currentTab=="search") {
+                    renderCatalog(local)
+                    pageRequestRunning=false
+                    content.findViewWithTag<TextView>("loading")?.text="本地搜索：已加载 ${local.size} 条；远程搜索结果不保证完整"
+                }
+            }
         }
     }
     private fun movieCard(m: Movie,width: Int, action: (() -> Unit)? = null): View {
@@ -291,6 +307,16 @@ class MainActivity : Activity() {
         return card
     }
     private fun showMovie(m: Movie) {
+        val src=config?.sources?.firstOrNull { it.id==m.sourceId }
+        if(src!=null && m.vodId.isNotBlank()) {
+            Network.pool.execute {
+                val detail=runCatching { Network.detail(src,m.vodId) }.getOrNull()
+                if(detail!=null && detail.lines.isNotEmpty()) Network.main.post { showMovieDialog(detail) }
+                else Network.main.post { showMovieDialog(m) }
+            }
+        } else showMovieDialog(m)
+    }
+    private fun showMovieDialog(m: Movie) {
         val episodes = m.lines.flatMap { line -> line.episodes.map { Triple(line, it.first, it.second) } }
         if (episodes.isEmpty()) { toast("没有可直接播放的线路"); return }
         val summary = listOfNotNull(
@@ -328,16 +354,17 @@ class MainActivity : Activity() {
             pane.addView(descScroll, LinearLayout.LayoutParams(-1,dp(135)))
         }
         val dialog = AlertDialog.Builder(this).setTitle(m.name).setView(pane).setNegativeButton("返回",null).create()
-        list.setOnItemClickListener { _,_,which,_ -> dialog.dismiss(); play(m,episodes[which].third,0L) }
+        list.setOnItemClickListener { _,_,which,_ -> dialog.dismiss(); play(m,episodes[which].third,0L,episodes[which].first.label) }
         dialog.show()
         dialog.window?.setLayout((resources.displayMetrics.widthPixels * 0.84).toInt(), -2)
         list.requestFocus()
         list.setSelection(0)
     }
-    private fun play(m:Movie,url:String,position:Long) {
+    private fun play(m:Movie,url:String,position:Long,line:String="") {
         val intent=Intent(this,PlayerActivity::class.java).putExtra("url",url).putExtra("position",position)
-            .putExtra("film",m.name).putExtra("year",m.year).putExtra("poster",m.image)
-            .putExtra("movieJson", org.json.JSONObject().put("name",m.name).put("year",m.year).put("image",m.image).put("description",m.description).toString())
+            .putExtra("headers",org.json.JSONObject(config?.sources?.firstOrNull { it.id==m.sourceId }?.playbackHeaders ?: emptyMap<String,String>()).toString())
+            .putExtra("line",line).putExtra("film",m.name).putExtra("year",m.year).putExtra("poster",m.image)
+            .putExtra("movieJson", org.json.JSONObject().put("sourceId",m.sourceId).put("vodId",m.vodId).put("name",m.name).put("year",m.year).put("image",m.image).put("description",m.description).toString())
         startActivity(intent)
     }
     override fun onResume() { super.onResume(); if(::content.isInitialized && currentTab=="home") drawHomeFromCache(); if(config!=null) loader.resume() }

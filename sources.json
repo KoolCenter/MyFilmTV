@@ -9,7 +9,7 @@
     "pageSizeHint": 20
   },
   "sources": [
-    {"id":"heimuer","name":"黑木耳","api":"https://json.heimuer.xyz/api.php/provide/vod/","type":"maccms-v10","enabled":false},
+    {"id":"heimuer","name":"黑木耳","api":"https://json.heimuer.xyz/api.php/provide/vod/","type":"maccms-v10","enabled":true},
     {"id":"suoni","name":"索尼资源","api":"https://suoniapi.com/api.php/provide/vod/","type":"maccms-v10","enabled":true},
     {"id":"ffzy","name":"非凡资源","api":"https://cj.ffzyapi.com/api.php/provide/vod/","type":"maccms-v10","enabled":true},
     {"id":"liangzi","name":"量子资源","api":"https://cj.lziapi.com/api.php/provide/vod/","type":"maccms-v10","enabled":true},

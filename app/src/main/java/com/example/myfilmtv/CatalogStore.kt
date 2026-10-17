@@ -7,7 +7,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 /** SQLite persists catalog metadata, not video files. All functions are synchronized. */
-class CatalogStore(context: Context) : SQLiteOpenHelper(context, "myfilm_catalog.db", null, 1) {
+class CatalogStore(context: Context) : SQLiteOpenHelper(context, "myfilm_catalog.db", null, 2) {
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL("CREATE TABLE films (grp TEXT NOT NULL, source TEXT NOT NULL, typeid TEXT NOT NULL, filmkey TEXT NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(grp, source, typeid, filmkey))")
         db.execSQL("CREATE INDEX films_group_idx ON films(grp)")
@@ -15,10 +15,13 @@ class CatalogStore(context: Context) : SQLiteOpenHelper(context, "myfilm_catalog
         db.execSQL("CREATE TABLE categories (source TEXT PRIMARY KEY, payload TEXT NOT NULL)")
         db.execSQL("CREATE TABLE history (filmkey TEXT PRIMARY KEY, payload TEXT NOT NULL, updated INTEGER NOT NULL)")
     }
-    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {}
-    private fun key(m: Movie) = m.name.trim().lowercase().replace(Regex("[\\s\\p{Punct}·]+"), "") + "|" + m.year.trim()
+    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
+        // Preserve existing film and watch history data. Old records still decode normally.
+        if(oldVersion<2) db.execSQL("CREATE INDEX IF NOT EXISTS films_lookup_idx ON films(grp,source,typeid)")
+    }
+    private fun key(m: Movie) = if(m.sourceId.isNotBlank() && m.vodId.isNotBlank()) "${m.sourceId}|${m.vodId}" else m.name.trim().lowercase()+"|"+m.year.trim()
     private fun encode(m: Movie): String = JSONObject().apply {
-        put("name", m.name); put("year", m.year); put("image", m.image); put("description", m.description)
+        put("sourceId",m.sourceId); put("vodId",m.vodId); put("name", m.name); put("year", m.year); put("image", m.image); put("description", m.description)
         put("genre",m.genre); put("area",m.area); put("actors",m.actors); put("director",m.director); put("score",m.score); put("updateTime",m.updateTime); put("hits",m.hits); put("remarks",m.remarks)
         put("lines", JSONArray().apply { m.lines.forEach { l -> put(JSONObject().apply {
             put("source",l.source); put("label",l.label)
@@ -27,7 +30,7 @@ class CatalogStore(context: Context) : SQLiteOpenHelper(context, "myfilm_catalog
     }.toString()
     private fun decode(raw: String): Movie {
         val j = JSONObject(raw)
-        val m = Movie(j.optString("name"),j.optString("year"),j.optString("image"),j.optString("description"),j.optString("genre"),j.optString("area"),j.optString("actors"),j.optString("director"),j.optString("score"),j.optString("updateTime"),j.optLong("hits"),j.optString("remarks"))
+        val m = Movie(j.optString("name"),j.optString("year"),j.optString("image"),j.optString("description"),j.optString("genre"),j.optString("area"),j.optString("actors"),j.optString("director"),j.optString("score"),j.optString("updateTime"),j.optLong("hits"),j.optString("remarks"),j.optString("sourceId"),j.optString("vodId"))
         val lines=j.optJSONArray("lines") ?: JSONArray()
         for(i in 0 until lines.length()) { val l=lines.getJSONObject(i); val eps=l.optJSONArray("episodes") ?: JSONArray()
             val pairs=(0 until eps.length()).mapNotNull { k -> runCatching { eps.getJSONArray(k).let { it.getString(0) to it.getString(1) } }.getOrNull() }
@@ -40,7 +43,7 @@ class CatalogStore(context: Context) : SQLiteOpenHelper(context, "myfilm_catalog
         db.beginTransaction()
         try {
             val sql="INSERT OR REPLACE INTO films(grp,source,typeid,filmkey,payload) VALUES(?,?,?,?,?)"
-            movies.forEach { m -> db.execSQL(sql,arrayOf(group,source,typeId,key(m),encode(m))) }
+            movies.forEach { m -> db.execSQL(sql,arrayOf(group,source,typeId,if(m.vodId.isNotBlank()) m.vodId else key(m),encode(m))) }
             db.execSQL("INSERT OR REPLACE INTO cursors(grp,source,typeid,nextpage,finished) VALUES(?,?,?,?,?)",arrayOf(group,source,typeId,next,if(finished)1 else 0))
             db.setTransactionSuccessful()
         } finally { db.endTransaction() }
@@ -50,10 +53,16 @@ class CatalogStore(context: Context) : SQLiteOpenHelper(context, "myfilm_catalog
         "SELECT nextpage,finished FROM cursors WHERE grp=? AND source=? AND typeid=?",arrayOf(group,source,typeId)).use {
         if(it.moveToFirst()) Cursor(it.getInt(0),it.getInt(1)!=0) else Cursor(1,false)
     }
-    @Synchronized fun movies(group:String,limit:Int=100000):List<Movie> = readableDatabase.rawQuery(
-        "SELECT payload FROM films WHERE grp=? ORDER BY rowid DESC LIMIT ?",arrayOf(group,limit.toString())).use { c ->
-        val list=ArrayList<Movie>(); while(c.moveToNext()) runCatching { decode(c.getString(0)) }.getOrNull()?.let(list::add); list
+    @Synchronized fun movies(group:String,limit:Int=80,offset:Int=0):List<Movie> = readableDatabase.rawQuery(
+        "SELECT payload FROM films WHERE grp=? ORDER BY rowid DESC LIMIT ? OFFSET ?", arrayOf(group,limit.toString(),offset.toString())).use { c ->
+        val out=ArrayList<Movie>(); while(c.moveToNext()) runCatching{ decode(c.getString(0)) }.getOrNull()?.let(out::add); out
     }
+    @Synchronized fun count(group:String):Int = readableDatabase.rawQuery(
+        "SELECT COUNT(*) FROM films WHERE grp=?",arrayOf(group)).use{ if(it.moveToFirst()) it.getInt(0) else 0 }
+    @Synchronized fun search(query:String,limit:Int=80,offset:Int=0):List<Movie> = readableDatabase.rawQuery(
+        "SELECT payload FROM films WHERE payload LIKE ? ORDER BY rowid DESC LIMIT ? OFFSET ?",
+        arrayOf("%"+query+"%",limit.toString(),offset.toString())
+    ).use { c -> val out=ArrayList<Movie>(); while(c.moveToNext()) runCatching{decode(c.getString(0))}.getOrNull()?.let(out::add); out }
     @Synchronized fun saveCategories(source:String,categories:List<Network.Category>) {
         val arr=JSONArray().apply { categories.forEach { put(JSONObject().put("id",it.id).put("name",it.name).put("parentId",it.parentId)) } }
         writableDatabase.execSQL("INSERT OR REPLACE INTO categories(source,payload) VALUES(?,?)",arrayOf(source,arr.toString()))

@@ -22,6 +22,7 @@ import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.PlayerView
 import org.json.JSONObject
 import java.util.Locale
+import androidx.media3.datasource.HttpDataSource
 
 class PlayerActivity : Activity() {
     private var player: ExoPlayer? = null
@@ -30,6 +31,7 @@ class PlayerActivity : Activity() {
     private var playbackUrl = ""
     private lateinit var status: TextView
     private lateinit var retry: Button
+    private var resumePosition=0L
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -37,7 +39,7 @@ class PlayerActivity : Activity() {
         playbackUrl = intent.getStringExtra("url") ?: run { finish(); return }
         movie = runCatching {
             val j = JSONObject(intent.getStringExtra("movieJson") ?: "{}")
-            Movie(j.optString("name"), j.optString("year"), j.optString("image"), j.optString("description"))
+            Movie(j.optString("name"), j.optString("year"), j.optString("image"), j.optString("description"), sourceId=j.optString("sourceId"), vodId=j.optString("vodId"))
         }.getOrNull()
 
         val frame = FrameLayout(this)
@@ -70,11 +72,12 @@ class PlayerActivity : Activity() {
         overlay.addView(retry)
         frame.addView(overlay, FrameLayout.LayoutParams(-1, -2, Gravity.CENTER))
         setContentView(frame)
+        resumePosition=intent.getLongExtra("position",0L)
         startPlayback(playerView)
     }
 
     private fun startPlayback(view: PlayerView) {
-        player?.release()
+        player?.let { if(it.currentPosition>0) resumePosition=it.currentPosition; it.release() }
         player = null
         status.visibility = View.VISIBLE
         status.text = "正在连接视频…"
@@ -91,11 +94,14 @@ class PlayerActivity : Activity() {
         val mediaItem = MediaItem.Builder().setUri(uri).apply {
             if (mime != null) setMimeType(mime)
         }.build()
+        val headers = runCatching {
+            val j=JSONObject(intent.getStringExtra("headers") ?: "{}")
+            j.keys().asSequence().associateWith { j.getString(it) }
+        }.getOrDefault(emptyMap())
         val http = DefaultHttpDataSource.Factory()
-            .setUserAgent("MyFilmTV/0.5 (Android TV)")
+            .setDefaultRequestProperties(headers)
             .setConnectTimeoutMs(12000)
-            .setReadTimeoutMs(15000)
-            .setAllowCrossProtocolRedirects(true)
+            .setReadTimeoutMs(20000)
         val p = ExoPlayer.Builder(this)
             .setMediaSourceFactory(DefaultMediaSourceFactory(http))
             .build()
@@ -119,14 +125,19 @@ class PlayerActivity : Activity() {
             override fun onPlayerError(error: PlaybackException) {
                 val cause = generateSequence(error.cause) { it.cause }.take(6).lastOrNull()
                 val detail = cause?.message ?: error.message ?: "未知错误"
-                status.text = "播放失败 (${error.errorCodeName})\n${detail.take(240)}\n\n可尝试更换播放线路，或返回影片详情。"
+                val httpError = generateSequence(error.cause) { it.cause }
+                    .filterIsInstance<HttpDataSource.InvalidResponseCodeException>()
+                    .firstOrNull()
+                val address = runCatching { uri.host.orEmpty() }.getOrDefault("")
+                val reason = if (httpError != null) "HTTP ${httpError.responseCode}（$address）" else error.errorCodeName
+                status.text = "播放失败：$reason\n${detail.take(180)}\n\n可更换线路或返回详情。"
                 status.visibility = View.VISIBLE
                 retry.visibility = View.VISIBLE
             }
         })
         p.setMediaItem(mediaItem)
         p.prepare()
-        val position = intent.getLongExtra("position", 0L)
+        val position = resumePosition
         if (position > 0L) p.seekTo(position)
         p.playWhenReady = true
     }
@@ -134,7 +145,7 @@ class PlayerActivity : Activity() {
     private fun saveProgress() {
         val m = movie ?: return
         val p = player ?: return
-        runCatching { store.saveProgress(m, "", playbackUrl, p.currentPosition.coerceAtLeast(0), p.duration.coerceAtLeast(0)) }
+        runCatching { if(p.currentPosition>0) store.saveProgress(m, intent.getStringExtra("line").orEmpty(), playbackUrl, p.currentPosition.coerceAtLeast(0), p.duration.coerceAtLeast(0)) }
     }
     override fun onPause() { saveProgress(); super.onPause() }
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
