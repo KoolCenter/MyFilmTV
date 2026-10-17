@@ -201,7 +201,7 @@ class MainActivity : Activity() {
         fun choice(label:String, options:List<String>, selected:()->String, change:(String)->Unit) {
             val b=button("$label：${selected()}") {
                 AlertDialog.Builder(this).setTitle(label).setSingleChoiceItems(options.toTypedArray(), options.indexOf(selected())) { dialog, which ->
-                    change(options[which]); dialog.dismiss(); updateFilters(); refreshCatalog()
+                    change(options[which]); dialog.dismiss(); updateFilters(); resetCatalogView(); refreshCatalog()
                 }.setNegativeButton("返回",null).show()
             }
             row.addView(b,LinearLayout.LayoutParams(0,dp(49),1f).apply { rightMargin=dp(12) })
