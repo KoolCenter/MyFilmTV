@@ -104,17 +104,24 @@ class PlayerActivity : Activity() {
                 try {
                     val code = connection.responseCode
                     if (code !in 200..299) {
-                        problem = "非凡线路服务器返回 HTTP $code"
+                        problem = "非凡线路服务器返回 HTTP $code\\n域名：${connection.url.host.orEmpty()}"
                     } else {
                         val type = connection.contentType.orEmpty().lowercase(Locale.ROOT)
+                        val responseHost = connection.url.host.orEmpty()
                         val buf = ByteArray(1024)
                         val size = connection.inputStream.use { stream -> stream.read(buf) }
                         val head = if (size > 0) String(buf, 0, size, Charsets.UTF_8).trimStart('\uFEFF', ' ', '\n', '\r', '\t') else ""
                         detected = when {
                             head.startsWith("#EXTM3U") || "mpegurl" in type -> MimeTypes.APPLICATION_M3U8
                             head.startsWith("<MPD") || head.startsWith("<?xml") && "<MPD" in head || "dash+xml" in type -> MimeTypes.APPLICATION_MPD
-                            head.startsWith("<!DOCTYPE html", true) || head.startsWith("<html", true) || "text/html" in type ->
-                                { problem = "此非凡线路返回网页，不是可直接播放的视频地址。"; null }
+                            head.startsWith("<!DOCTYPE html", true) || head.startsWith("<html", true) || "text/html" in type -> {
+                                val title = Regex("<title[^>]*>(.*?)</title>", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL))
+                                    .find(head)?.groupValues?.get(1)?.replace(Regex("\\s+"), " ")?.trim()?.take(70).orEmpty()
+                                problem = "非凡线路返回 HTML 网页（HTTP $code）\\n域名：$responseHost" +
+                                    (if (title.isNotBlank()) "\\n标题：$title" else "") +
+                                    "\\n响应类型：${type.take(65)}"
+                                null
+                            }
                             else -> null
                         }
                     }
