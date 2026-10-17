@@ -43,8 +43,10 @@ class MainActivity : Activity() {
     private var selectedGenre = "全部"
     private var selectedYear = "全部"
     private var selectedSort = "最近更新"
+    private var selectedArea = "全部"
     private val genreOptions = listOf("全部", "动作", "喜剧", "科幻", "剧情", "悬疑", "惊悚", "恐怖", "爱情", "动画", "犯罪", "纪录")
     private val yearOptions = listOf("全部", "2026", "2025", "2024", "2023", "2022", "2021", "2020", "2010年代", "更早")
+    private val areaOptions = listOf("全部", "中国大陆", "中国香港", "中国台湾", "美国", "英国", "日本", "韩国", "泰国", "印度", "法国", "德国", "加拿大", "澳大利亚", "西班牙", "俄罗斯", "其他", "未标注")
     private val sortOptions = listOf("最近更新", "上映年份", "评分优先")
     private val tabs = listOf("home" to "首页", "movie" to "电影", "series" to "电视剧", "variety" to "综艺", "anime" to "动漫", "short" to "短剧")
 
@@ -94,7 +96,7 @@ class MainActivity : Activity() {
     }
     private fun redrawHeader() { root.removeViewAt(0); drawHeader() }
     private fun openTab(key: String) {
-        currentTab=key; searchTerm=""; selectedGenre="全部"; selectedYear="全部"; selectedSort="最近更新"; sourcePages.clear(); exhausted.clear(); displayed.clear()
+        currentTab=key; searchTerm=""; selectedGenre="全部"; selectedYear="全部"; selectedSort="最近更新"; selectedArea="全部"; sourcePages.clear(); exhausted.clear(); displayed.clear()
         redrawHeader(); loadTab()
     }
     private fun loadConfig() {
@@ -208,6 +210,7 @@ class MainActivity : Activity() {
         }
         choice("类型",genreOptions,{selectedGenre},{selectedGenre=it})
         choice("年份",yearOptions,{selectedYear},{selectedYear=it})
+        choice("地区",areaOptions,{selectedArea},{selectedArea=it})
         choice("排序",sortOptions,{selectedSort},{selectedSort=it})
         content.addView(row)
     }
@@ -224,9 +227,37 @@ class MainActivity : Activity() {
         content.removeView(row)
         content.addView(row,index)
     }
+    private fun areaMatches(raw: String): Boolean {
+        if (selectedArea=="全部") return true
+        val value=raw.trim()
+        if (selectedArea=="未标注") return value.isEmpty()
+        val aliases=mapOf(
+            "中国大陆" to listOf("大陆","内地","中国"),
+            "中国香港" to listOf("香港"),
+            "中国台湾" to listOf("台湾"),
+            "美国" to listOf("美国","USA"),
+            "英国" to listOf("英国","UK"),
+            "日本" to listOf("日本"),
+            "韩国" to listOf("韩国"),
+            "泰国" to listOf("泰国"),
+            "印度" to listOf("印度"),
+            "法国" to listOf("法国"),
+            "德国" to listOf("德国"),
+            "加拿大" to listOf("加拿大"),
+            "澳大利亚" to listOf("澳大利亚","澳洲"),
+            "西班牙" to listOf("西班牙"),
+            "俄罗斯" to listOf("俄罗斯","俄国")
+        )
+        if (selectedArea=="其他") return value.isNotEmpty() && aliases.values.flatten().none { value.contains(it,true) }
+        if (selectedArea=="中国大陆") {
+            return (value=="中国" || value.contains("内地") || value.contains("大陆")) && !value.contains("香港") && !value.contains("台湾")
+        }
+        return aliases[selectedArea]?.any { value.contains(it,true) } == true
+    }
     private fun filtered(movies:List<Movie>):List<Movie> {
         val list=Network.merge(listOf(movies)).filter { m ->
             (selectedGenre=="全部" || m.genre.contains(selectedGenre,true)) &&
+            areaMatches(m.area) &&
             (selectedYear=="全部" || when(selectedYear) {
                 "2010年代" -> (m.year.toIntOrNull() ?: 0) in 2010..2019
                 "更早" -> (m.year.toIntOrNull() ?: 9999)<2010
