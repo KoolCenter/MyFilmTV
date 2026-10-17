@@ -80,7 +80,66 @@ class PlayerActivity : Activity() {
         startPlayback(playerView)
     }
 
-    private fun startPlayback(view: PlayerView) {
+    // Probe only the ambiguous "feifan" line. HLS-labelled lines keep their
+    // existing fast playback path; no global UA/Referer or codec changes.
+    private fun inspectFeifan(view: PlayerView) {
+        overlay.visibility = View.VISIBLE
+        status.text = "正在检查非凡播放地址…"
+        retry.visibility = View.GONE
+        val target = playbackUrl
+        val providedHeaders = runCatching {
+            val obj = JSONObject(intent.getStringExtra("headers") ?: "{}")
+            obj.keys().asSequence().associateWith { obj.getString(it) }
+        }.getOrDefault(emptyMap())
+        Thread {
+            var detected: String? = null
+            var problem: String? = null
+            try {
+                val connection = java.net.URL(target).openConnection() as java.net.HttpURLConnection
+                connection.connectTimeout = 10000
+                connection.readTimeout = 10000
+                connection.instanceFollowRedirects = true
+                connection.setRequestProperty("Range", "bytes=0-1023")
+                providedHeaders.forEach { (key, value) -> connection.setRequestProperty(key, value) }
+                try {
+                    val code = connection.responseCode
+                    if (code !in 200..299) {
+                        problem = "非凡线路服务器返回 HTTP $code"
+                    } else {
+                        val type = connection.contentType.orEmpty().lowercase(Locale.ROOT)
+                        val buf = ByteArray(1024)
+                        val size = connection.inputStream.use { stream -> stream.read(buf) }
+                        val head = if (size > 0) String(buf, 0, size, Charsets.UTF_8).trimStart('\uFEFF', ' ', '\n', '\r', '\t') else ""
+                        detected = when {
+                            head.startsWith("#EXTM3U") || "mpegurl" in type -> MimeTypes.APPLICATION_M3U8
+                            head.startsWith("<MPD") || head.startsWith("<?xml") && "<MPD" in head || "dash+xml" in type -> MimeTypes.APPLICATION_MPD
+                            head.startsWith("<!DOCTYPE html", true) || head.startsWith("<html", true) || "text/html" in type ->
+                                { problem = "此非凡线路返回网页，不是可直接播放的视频地址。"; null }
+                            else -> null
+                        }
+                    }
+                } finally { connection.disconnect() }
+            } catch (e: Exception) {
+                problem = "检查非凡线路失败：${e.message.orEmpty().take(130)}"
+            }
+            runOnUiThread {
+                if (isFinishing || isDestroyed) return@runOnUiThread
+                if (problem != null) {
+                    status.text = problem + "\n请返回选择其他可用线路。"
+                    overlay.visibility = View.VISIBLE
+                    retry.visibility = View.VISIBLE
+                } else {
+                    startPlayback(view, detected, skipProbe = true)
+                }
+            }
+        }.start()
+    }
+
+    private fun startPlayback(view: PlayerView, probedMime: String? = null, skipProbe: Boolean = false) {
+        if (!skipProbe && intent.getStringExtra("playFrom").orEmpty().equals("feifan", ignoreCase = true)) {
+            inspectFeifan(view)
+            return
+        }
         player?.let { if(it.currentPosition>0) resumePosition=it.currentPosition; it.release() }
         player = null
         overlay.visibility = View.VISIBLE
@@ -107,7 +166,7 @@ class PlayerActivity : Activity() {
         // Preserve their vod_play_from label as a media-type hint.
         val path = uri.path.orEmpty().lowercase(Locale.ROOT)
         val playFrom = intent.getStringExtra("playFrom").orEmpty().lowercase(Locale.ROOT)
-        val mime = when {
+        val mime = probedMime ?: when {
             useGateway || path.endsWith(".m3u8") || "m3u8" in playFrom || "hls" in playFrom -> MimeTypes.APPLICATION_M3U8
             path.endsWith(".mpd") || "dash" in playFrom -> MimeTypes.APPLICATION_MPD
             else -> null
