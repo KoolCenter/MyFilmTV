@@ -48,7 +48,16 @@ jobs:
           echo "MYFILM_STORE_PASSWORD=$STORE_PASSWORD" >> "$GITHUB_ENV"
           echo "MYFILM_KEY_ALIAS=$KEY_ALIAS" >> "$GITHUB_ENV"
           echo "MYFILM_KEY_PASSWORD=$KEY_PASSWORD" >> "$GITHUB_ENV"
+      - name: Embed gateway configuration
+        env:
+          GATEWAY_KEY: ${{ secrets.MYFILM_GATEWAY_TOKEN }}
+        run: |
+          test -n "$GATEWAY_KEY"
+          mkdir -p app/src/main/assets
+          python3 -c 'import json,os,pathlib; pathlib.Path("app/src/main/assets/gateway.json").write_text(json.dumps({"url":"https://sg3.zlb35.dns.army","token":os.environ["GATEWAY_KEY"]}), encoding="utf-8")'
       - name: Build debug APK
+        env:
+          MYFILM_GATEWAY_TOKEN: ${{ secrets.MYFILM_GATEWAY_TOKEN }}
         run: gradle --no-daemon :app:assembleDebug
       - name: Rename APK
         run: cp app/build/outputs/apk/debug/app-debug.apk MyFilmTV.apk
