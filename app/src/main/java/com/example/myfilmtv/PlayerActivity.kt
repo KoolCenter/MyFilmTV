@@ -92,8 +92,9 @@ class PlayerActivity : Activity() {
         // Media3 cannot decode webpage URLs or some proprietary play-line formats.
         val originalUri = android.net.Uri.parse(playbackUrl)
         val prefs = getSharedPreferences("myfilm", MODE_PRIVATE)
-        val gateway = prefs.getString("hls_gateway_url", "").orEmpty().trim().trimEnd('/')
-        val gatewayToken = prefs.getString("hls_gateway_token", "").orEmpty().trim()
+        val defaults = runCatching { JSONObject(assets.open("gateway.json").bufferedReader().use { it.readText() }) }.getOrNull()
+        val gateway = prefs.getString("hls_gateway_url", "").orEmpty().ifBlank { defaults?.optString("url").orEmpty() }.trim().trimEnd('/')
+        val gatewayToken = prefs.getString("hls_gateway_token", "").orEmpty().ifBlank { defaults?.optString("token").orEmpty() }.trim()
         val useGateway = gateway.startsWith("https://") && gatewayToken.isNotBlank() &&
             Regex("v[0-9]+\\.rstu6\\.com", RegexOption.IGNORE_CASE).matches(originalUri.host.orEmpty()) &&
             originalUri.scheme == "https" && originalUri.path.orEmpty().endsWith(".m3u8", ignoreCase = true)
