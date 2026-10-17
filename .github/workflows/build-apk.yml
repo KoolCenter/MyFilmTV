@@ -49,6 +49,8 @@ jobs:
           echo "MYFILM_KEY_ALIAS=$KEY_ALIAS" >> "$GITHUB_ENV"
           echo "MYFILM_KEY_PASSWORD=$KEY_PASSWORD" >> "$GITHUB_ENV"
       - name: Build debug APK
+        env:
+          MYFILM_GATEWAY_TOKEN: ${{ secrets.MYFILM_GATEWAY_TOKEN }}
         run: gradle --no-daemon :app:assembleDebug
       - name: Rename APK
         run: cp app/build/outputs/apk/debug/app-debug.apk MyFilmTV.apk
