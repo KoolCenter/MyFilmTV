@@ -101,7 +101,7 @@ class PlayerActivity : Activity() {
         player?.release()
         player = null
         view.visibility = View.GONE
-        cloudView?.destroy()
+        cloudView?.let { old -> (old.parent as? FrameLayout)?.removeView(old); old.destroy() }
         val page = WebView(this)
         cloudView = page
         page.setBackgroundColor(Color.BLACK)
@@ -132,12 +132,14 @@ class PlayerActivity : Activity() {
             }
         }
         page.webViewClient = object : WebViewClient() {
+            private var mainFrameFailed = false
             override fun onPageFinished(v: WebView, url: String) {
-                overlay.visibility = View.GONE
+                if (!mainFrameFailed) overlay.visibility = View.GONE
                 v.requestFocus()
             }
             override fun onReceivedError(v: WebView, req: WebResourceRequest, error: WebResourceError) {
                 if (req.isForMainFrame) {
+                    mainFrameFailed = true
                     status.text = "非凡云页面加载失败：${error.description}"
                     overlay.visibility = View.VISIBLE
                     retry.visibility = View.VISIBLE
@@ -145,6 +147,7 @@ class PlayerActivity : Activity() {
             }
             override fun onReceivedHttpError(v: WebView, req: WebResourceRequest, response: WebResourceResponse) {
                 if (req.isForMainFrame) {
+                    mainFrameFailed = true
                     status.text = "非凡云页面返回 HTTP ${response.statusCode}"
                     overlay.visibility = View.VISIBLE
                     retry.visibility = View.VISIBLE
@@ -343,6 +346,6 @@ class PlayerActivity : Activity() {
             else -> super.onKeyDown(keyCode, event)
         }
     }
-    override fun onStop() { saveProgress(); player?.release(); player = null; super.onStop() }
+    override fun onStop() { saveProgress(); cloudView?.onPause(); player?.release(); player = null; super.onStop() }
     override fun onDestroy() { cloudView?.destroy(); cloudView = null; store.close(); super.onDestroy() }
 }
