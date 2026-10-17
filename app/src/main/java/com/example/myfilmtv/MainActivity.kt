@@ -363,7 +363,7 @@ class MainActivity : Activity() {
     private fun play(m:Movie,url:String,position:Long,line:String="") {
         val intent=Intent(this,PlayerActivity::class.java).putExtra("url",url).putExtra("position",position)
             .putExtra("headers",org.json.JSONObject(config?.sources?.firstOrNull { it.id==m.sourceId }?.playbackHeaders ?: emptyMap<String,String>()).toString())
-            .putExtra("line",line).putExtra("film",m.name).putExtra("year",m.year).putExtra("poster",m.image)
+            .putExtra("line",line).putExtra("playFrom",line).putExtra("film",m.name).putExtra("year",m.year).putExtra("poster",m.image)
             .putExtra("movieJson", org.json.JSONObject().put("sourceId",m.sourceId).put("vodId",m.vodId).put("name",m.name).put("year",m.year).put("image",m.image).put("description",m.description).toString())
         startActivity(intent)
     }

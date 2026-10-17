@@ -103,10 +103,13 @@ class PlayerActivity : Activity() {
                 .appendQueryParameter("url", playbackUrl)
                 .appendQueryParameter("token", gatewayToken).build()
         } else originalUri
+        // Some MacCMS providers use extensionless HLS/DASH URLs.
+        // Preserve their vod_play_from label as a media-type hint.
         val path = uri.path.orEmpty().lowercase(Locale.ROOT)
+        val playFrom = intent.getStringExtra("playFrom").orEmpty().lowercase(Locale.ROOT)
         val mime = when {
-            useGateway || path.endsWith(".m3u8") -> MimeTypes.APPLICATION_M3U8
-            path.endsWith(".mpd") -> MimeTypes.APPLICATION_MPD
+            useGateway || path.endsWith(".m3u8") || "m3u8" in playFrom || "hls" in playFrom -> MimeTypes.APPLICATION_M3U8
+            path.endsWith(".mpd") || "dash" in playFrom -> MimeTypes.APPLICATION_MPD
             else -> null
         }
         val mediaItem = MediaItem.Builder().setUri(uri).apply {
@@ -150,7 +153,14 @@ class PlayerActivity : Activity() {
                     .firstOrNull()
                 val address = runCatching { uri.host.orEmpty() }.getOrDefault("")
                 val reason = if (httpError != null) "HTTP ${httpError.responseCode}（$address）" else error.errorCodeName
-                status.text = "播放失败：$reason\n${detail.take(180)}\n\n可更换线路或返回详情。"
+                val explanation = when {
+                    httpError?.responseCode == 403 -> "视频服务器拒绝访问，请检查该线路的访问权限或网络出口。"
+                    httpError?.responseCode == 404 || httpError?.responseCode == 410 -> "播放文件或视频分片不存在，请更换有效线路。"
+                    error.errorCode == PlaybackException.ERROR_CODE_PARSING_CONTAINER_UNSUPPORTED ->
+                        "服务器返回的数据无法识别为视频。可能是 HTML 页面、失效链接或未识别的播放协议。"
+                    else -> "可重试或返回详情更换线路。"
+                }
+                status.text = "播放失败：$reason\n${detail.take(160)}\n\n$explanation"
                 overlay.visibility = View.VISIBLE
                 status.visibility = View.VISIBLE
                 retry.visibility = View.VISIBLE
