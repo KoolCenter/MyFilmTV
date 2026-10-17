@@ -160,7 +160,18 @@ class MainActivity : Activity() {
             val more=button("继续加载") { loadNext() }.apply {tag="more"}
             content.addView(more,LinearLayout.LayoutParams(-1,dp(53)))
             scroll.setOnScrollChangeListener(null)
-            // Manual pagination caps live poster views to 30.
+            // First visit still fetches the first page; later pages are user initiated.
+            if(currentTab!="search" && store.count(currentTab)==0) {
+                val group=currentTab
+                pageRequestRunning=true
+                loader.foreground(group) { _, _, hasMore ->
+                    if(currentTab==group) {
+                        pageRequestRunning=false
+                        categoryComplete=!hasMore
+                        renderCatalog(store.movies(group,renderedLimit,0))
+                    }
+                }
+            }
         }
     }
     private fun drawHomeFromCache() {
