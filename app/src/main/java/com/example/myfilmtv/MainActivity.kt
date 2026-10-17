@@ -376,7 +376,27 @@ class MainActivity : Activity() {
             inputType=android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_URI
             selectAll()
         }
-        val wrap=LinearLayout(this).apply { setPadding(dp(22),dp(8),dp(22),0); addView(field) }
+        val gatewayField=EditText(this).apply {
+            setSingleLine(true)
+            hint="https://sg3.zlb35.dns.army"
+            setText(prefs.getString("hls_gateway_url",""))
+            inputType=android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_URI
+        }
+        val tokenField=EditText(this).apply {
+            setSingleLine(true)
+            hint="网关访问密钥"
+            setText(prefs.getString("hls_gateway_token",""))
+            inputType=android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
+        }
+        val wrap=LinearLayout(this).apply {
+            orientation=LinearLayout.VERTICAL
+            setPadding(dp(22),dp(8),dp(22),0)
+            addView(text("资源站订阅 URL",14f))
+            addView(field)
+            addView(text("M3U8 网关（留空禁用）",14f))
+            addView(gatewayField)
+            addView(tokenField)
+        }
         val dialog=AlertDialog.Builder(this).setTitle("影视资源配置 URL")
             .setView(wrap).setNegativeButton("取消",null)
             .setPositiveButton("保存并加载",null).create()
@@ -386,7 +406,12 @@ class MainActivity : Activity() {
             save.setOnClickListener {
                 val url=field.text.toString().trim()
                 if(!url.startsWith("https://")) { field.error="需要 HTTPS URL"; return@setOnClickListener }
-                prefs.edit().putString("url",url).apply()
+                val gw=gatewayField.text.toString().trim().trimEnd('/')
+                if(gw.isNotBlank() && !gw.startsWith("https://")) { gatewayField.error="网关必须为 HTTPS"; return@setOnClickListener }
+                if(gw.isNotBlank() && tokenField.text.isBlank()) { tokenField.error="网关需要访问密钥"; return@setOnClickListener }
+                prefs.edit().putString("url",url)
+                    .putString("hls_gateway_url",gw)
+                    .putString("hls_gateway_token",tokenField.text.toString().trim()).apply()
                 (getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager).hideSoftInputFromWindow(field.windowToken,0)
                 dialog.dismiss(); loadConfig()
             }
